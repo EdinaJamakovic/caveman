@@ -7,22 +7,18 @@ class ChemicalFields:
     [0: Food, 1: Toxin, 2: Pheromone A, 3: Pheromone B]
     """
 
-    def __init__(self, size=128, device="cuda"):
+    def __init__(self, channels= 4, size=128, gamma = (0.999, 0.980, 0.920, 0.900), device="cuda"):
+        self.channels = channels
         self.size = size
         self.device = torch.device(device)
 
         # 1. The World Grid
         # Shape: (Batch=1, Channels=4, Height=size, Width=size)
-        self.grid = torch.zeros((1, 4, size, size), dtype=torch.float32, device=self.device)
+        self.grid = torch.zeros((1, channels, size, size), dtype=torch.float32, device=self.device)
 
         # 2. The Decay Vector (Temporal Decay)
         # Reshaped to (1, 4, 1, 1) to trigger PyTorch's zero-stride broadcasting across the spatial grid
-        self.gamma = torch.tensor([
-            0.999,  # Food: decays very slowly
-            0.980,  # Toxin: decays moderately
-            0.920,  # Pheromone A: decays quickly
-            0.900  # Pheromone B: decays very quickly
-        ], dtype=torch.float32, device=self.device).view(1, 4, 1, 1)
+        self.gamma = torch.tensor(gamma, dtype=torch.float32, device=self.device).view(1, channels, 1, 1)
 
         # 3. The Diffusion Kernel (Spatial Spread)
         # Base 3x3 Gaussian matrix ensuring mass conservation (sum = 1.0)
@@ -34,18 +30,19 @@ class ChemicalFields:
 
         # Reshape and repeat to form the 4D Depthwise Weight Tensor
         # Shape: (out_channels=4, in_channels_per_group=1, H=3, W=3)
-        self.kernel = base_kernel.unsqueeze(0).unsqueeze(0).repeat(4, 1, 1, 1)
+        self.kernel = base_kernel.unsqueeze(0).unsqueeze(0).repeat(channels, 1, 1, 1)
+
+    def diffuse(self, pad, mode):
+        padded_grid = F.pad(self.grid, pad, mode=mode)
+        self.grid = F.conv2d(padded_grid, self.kernel, groups=self.channels, padding=0) # double check
 
     def update(self):
         """Executes one physics frame: Toroidal Diffusion -> Channel Decay"""
         # Step A: Circular padding to create a seamless toroidal universe (wraps edges)
-        padded_grid = F.pad(self.grid, (1, 1, 1, 1), mode='circular')
-
-        # Step B: Depthwise convolution (groups=4) keeps the 4 chemicals strictly isolated
-        diffused_grid = F.conv2d(padded_grid, self.kernel, groups=4, padding=0)
+        self.diffuse((1, 1, 1, 1), "circular")
 
         # Step C: Multiply by broadcasted decay tensor
-        self.grid = diffused_grid * self.gamma
+        self.grid = self.grid * self.gamma
 
     def add_chemical(
             self,
